@@ -74,9 +74,9 @@ def _git_changed_files(git_rev, stop_rev=None, git_root=''):
         git_root = os.getcwd()
     if stop_rev:
         git_rev = "{0}..{1}".format(git_rev, stop_rev)
-    output = subprocess.check_output(['git', 'diff-tree', '--no-commit-id',
-                                      '--name-only', '-r', git_rev],
-                                     cwd=git_root)
+    print("Changed files from:", git_rev, stop_rev, git_root)
+    output = subprocess.check_output(['git', '-C', git_root, 'diff-tree',
+                                      '--no-commit-id', '--name-only', '-r', git_rev])
     files = output.decode().splitlines()
     return files
 
@@ -217,9 +217,9 @@ def add_recipe_to_graph(recipe_dir, graph, run, worker, conda_resolve,
                         recipes_dir=None, config=None, finalize=False):
     try:
         rendered = _get_or_render_metadata(recipe_dir, worker, config=config, finalize=finalize)
-    except (IOError, SystemExit):
-        log.warn('invalid recipe dir: %s - skipping', recipe_dir)
-        return None
+    except (IOError, SystemExit) as e:
+        log.exception('invalid recipe dir: %s', recipe_dir)
+        raise
 
     name = None
     for (metadata, _, _) in rendered:
@@ -230,7 +230,7 @@ def add_recipe_to_graph(recipe_dir, graph, run, worker, conda_resolve,
 
         if name not in graph.nodes():
             graph.add_node(name, meta=metadata, worker=worker)
-            add_dependency_nodes_and_edges(name, graph, run, worker, conda_resolve,
+            add_dependency_nodes_and_edges(name, graph, run, worker, conda_resolve, config=config,
                                         recipes_dir=recipes_dir, finalize=finalize)
 
         # # add the test equivalent at the same time.  This is so that expanding can find it.
@@ -277,24 +277,32 @@ def add_intradependencies(graph):
     """ensure that downstream packages wait for upstream build/test (not use existing
     available packages)"""
     for node in graph.nodes():
-        if 'meta' not in graph.node[node]:
+        if 'meta' not in graph.nodes[node]:
             continue
         # get build dependencies
-        m = graph.node[node]['meta']
+        m = graph.nodes[node]['meta']
         # this is pretty hard. Realistically, we would want to know
         # what the build and host platforms are on the build machine.
         # However, all we know right now is what machine we're actually
         # on (the one calculating the graph).
+
+        test_requires = m.meta.get('test', {}).get('requires', [])
+
+        log.info("node: {}".format(node))
+        log.info("   build: {}".format(m.ms_depends('build')))
+        log.info("   host: {}".format(m.ms_depends('host')))
+        log.info("   run: {}".format(m.ms_depends('run')))
+        log.info("   test: {}".format(test_requires))
+
         deps = set(m.ms_depends('build') + m.ms_depends('host') + m.ms_depends('run') +
-                   [conda_interface.MatchSpec(dep) for dep in
-                    m.meta.get('test', {}).get('requires', [])])
+                   [conda_interface.MatchSpec(dep) for dep in test_requires or []])
 
         for dep in deps:
-            name_matches = (n for n in graph.nodes() if graph.node[n]['meta'].name() == dep.name)
+            name_matches = (n for n in graph.nodes() if graph.nodes[n]['meta'].name() == dep.name)
             for matching_node in name_matches:
                 # are any of these build dependencies also nodes in our graph?
                 if (match_peer_job(conda_interface.MatchSpec(dep),
-                                   graph.node[matching_node]['meta'],
+                                   graph.nodes[matching_node]['meta'],
                                    m) and
                          (node, matching_node) not in graph.edges()):
                     # add edges if they don't already exist
@@ -311,8 +319,8 @@ def collapse_subpackage_nodes(graph):
     # group nodes by their recipe path first, then within those groups by their variant
     node_groups = {}
     for node in graph.nodes():
-        if 'meta' in graph.node[node]:
-            meta = graph.node[node]['meta']
+        if 'meta' in graph.nodes[node]:
+            meta = graph.nodes[node]['meta']
             meta_path = meta.meta_path or meta.meta['extra']['parent_recipe']['path']
             master = False
 
@@ -338,22 +346,24 @@ def collapse_subpackage_nodes(graph):
             #     package/name from recipe given by common recipe path.
             subpackages = subgroup.get('subpackages')
             if 'master' not in subgroup:
-                sp0 = graph.node[subpackages[0]]
+                sp0 = graph.nodes[subpackages[0]]
                 master_meta = MetaData(recipe_path, config=sp0['meta'].config)
                 worker = sp0['worker']
                 master_key = package_key(master_meta, worker['label'])
                 graph.add_node(master_key, meta=master_meta, worker=worker)
-                master = graph.node[master_key]
+                master = graph.nodes[master_key]
             else:
                 master = subgroup['master']
-                master_key = package_key(graph.node[master]['meta'],
-                                         graph.node[master]['worker']['label'])
+                master_key = package_key(graph.nodes[master]['meta'],
+                                         graph.nodes[master]['worker']['label'])
             # fold in dependencies for all of the other subpackages within a group.  This is just
             #     the intersection of the edges between all nodes.  Store this on the "master" node.
             if subpackages:
                 remap_edges = [edge for edge in graph.edges() if edge[1] in subpackages]
                 for edge in remap_edges:
-                    graph.add_edge(edge[0], master_key)
+                    # make sure not to add references to yourself
+                    if edge[0] != master_key:
+                        graph.add_edge(edge[0], master_key)
                     graph.remove_edge(*edge)
 
                 # remove nodes that have been folded into master nodes
@@ -436,12 +446,12 @@ def _buildable(name, version, recipes_dir, worker, config, finalize):
 
 
 def add_dependency_nodes_and_edges(node, graph, run, worker, conda_resolve, recipes_dir=None,
-                                   finalize=False):
+                                   finalize=False, config=None):
     '''add build nodes for any upstream deps that are not yet installable
 
     changes graph in place.
     '''
-    metadata = graph.node[node]['meta']
+    metadata = graph.nodes[node]['meta']
     # for plain test runs, ignore build reqs.
     deps = get_run_test_deps(metadata)
     recipes_dir = recipes_dir or os.getcwd()
@@ -461,7 +471,7 @@ def add_dependency_nodes_and_edges(node, graph, run, worker, conda_resolve, reci
                 #                  " available) can't produce desired version ({})."
                 #                  .format(dep, version))
             dep_name = add_recipe_to_graph(recipe_dir, graph, 'build', worker,
-                                            conda_resolve, recipes_dir, finalize=finalize)
+                                            conda_resolve, recipes_dir, config=config, finalize=finalize)
             if not dep_name:
                 raise ValueError("Tried to build recipe {0} as dependency, which is skipped "
                                  "in meta.yaml".format(recipe_dir))
@@ -497,7 +507,7 @@ def expand_run(graph, conda_resolve, worker, run, steps=0, max_downstream=5,
             for predecessor in full_graph.predecessors(node):
                 if max_downstream < 0 or (downstream - initial_nodes) < max_downstream:
                     add_recipe_to_graph(
-                        os.path.dirname(full_graph.node[predecessor]['meta'].meta_path),
+                        os.path.dirname(full_graph.nodes[predecessor]['meta'].meta_path),
                         task_graph, run=run, worker=worker, conda_resolve=conda_resolve,
                         recipes_dir=recipes_dir, finalize=finalize)
                     downstream += 1
