@@ -1,13 +1,13 @@
 {% set name = "pypardiso" %}
-{% set version = "0.3" %}
+{% set version = "0.3.1" %}
 
 package:
   name: {{ name|lower }}
   version: {{ version }}
 
 source:
-  url: https://github.com/haasad/PyPardisoProject/archive/refs/tags/v0.3.0.tar.gz
-  sha256: b054262e1e58cd57660d6ebbfcac2a45ee01891dbe74bd31fcb5e69e3c07de19
+  url: https://github.com/haasad/PyPardisoProject/archive/refs/tags/v0.3.1.tar.gz
+  sha256: 41cb729c1fa9e69393d2f1d73f8758282f34a553ef333ad165f3fd41447518db
 
 build:
   number: 0
