@@ -6,28 +6,22 @@ package:
   version: {{ version }}
 
 source:
-  url: https://github.com/haasad/PyPardisoProject/archive/refs/tags/v0.3.1.tar.gz
-  sha256: 41cb729c1fa9e69393d2f1d73f8758282f34a553ef333ad165f3fd41447518db
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: c3846870dc2590250980d98568e9dfc99b0271e9e5a9c8714a85cc373e839788
 
 build:
   number: 0
   script: "{{ PYTHON }} -m pip install . -vv"
-  skip: True  # [py<35]
+  noarch: python
 
 requirements:
-  build:
-    - python
-    - setuptools
   host:
-    - python
+    - python >=3.6
     - setuptools
-    - numpy
     - pip
-    - "libblas =*=*mkl"  # [win]
-    - mkl  # [win]
   run:
-    - python
-    - {{ pin_compatible('numpy') }}
+    - python >=3.6
+    - numpy
     - "libblas =*=*mkl"
     - scipy
     - mkl
@@ -39,6 +33,7 @@ test:
     - pypardiso
   requires:
     - pytest
+    - pip
   files:
     - tests/test_basic_solve.py
     - tests/test_input_A.py
@@ -46,9 +41,10 @@ test:
     - tests/test_input_b.py
   commands:
     - pytest -vv tests/
+    - pip check
 
 about:
-  home: https://github.com/cmutel/PyPardisoProject
+  home: https://github.com/haasad/PyPardisoProject
   license: BSD-3-Clause
   license_family: BSD
   license_file: LICENSE.txt
@@ -56,5 +52,5 @@ about:
 
 extra:
   recipe-maintainers:
-    - haasad
     - cmutel
+    - haasad
